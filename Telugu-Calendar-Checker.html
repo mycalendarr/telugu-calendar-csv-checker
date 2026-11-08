@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Telugu Calendar CSV Checker</title>
+<style>
+:root{color-scheme:light;font:16px system-ui;background:#f8f4ec;color:#222b24}body{max-width:820px;margin:auto;padding:2rem 1rem}h1{font-size:clamp(1.8rem,5vw,3rem);margin:.2rem 0}.label{color:#64451c}section{background:white;border:1px solid #dfd8ca;border-radius:16px;padding:1.25rem;margin:1.2rem 0}label{display:block;font-weight:650;margin:.8rem 0 .3rem}input,textarea,button{font:inherit}textarea{width:100%;box-sizing:border-box;min-height:10rem;padding:.65rem;border:1px solid #777;border-radius:8px}button{padding:.55rem .85rem;border-radius:8px;border:1px solid #256247;background:white;color:#174e37;cursor:pointer;margin:.5rem .3rem .25rem 0}.primary{background:#174e37;color:white}button:disabled{opacity:.5;cursor:default}button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid #aa680e;outline-offset:3px}li{margin:.3rem 0;overflow-wrap:anywhere}small{display:block;color:#4c514a}
+</style>
+<body>
+<header><span class="label" lang="te">తెలుగు క్యాలెండర్</span><h1>Calendar CSV Checker</h1><p>Check dates before publishing a Telugu calendar. Everything runs in this browser.</p></header>
+<section aria-labelledby="input-heading">
+<h2 id="input-heading">Load your calendar</h2>
+<label for="file">Choose a UTF-8 CSV file</label><input id="file" type="file" accept=".csv,text/csv">
+<label for="csv">Or paste CSV</label><textarea id="csv" spellcheck="false" placeholder="date,festival,tithi"></textarea>
+<small>Use a date column in YYYY-MM-DD format. Festival and tithi columns are optional. Leave the month blank for festival-only lists.</small>
+<label for="month">Expected month for a full daily calendar (optional)</label><input id="month" placeholder="2027-01" inputmode="numeric" maxlength="7">
+<div><button class="primary" id="check">Check calendar</button><button id="sample">Load sample</button></div>
+</section>
+<section aria-labelledby="report-heading"><h2 id="report-heading">Validation report</h2><p id="summary" role="status">Load or paste a CSV to get started.</p><ul id="issues"></ul><button id="download" disabled>Download report</button><small>This tool checks date structure and coverage. It does not verify festival dates or astronomical tithi calculations.</small></section>
+<script>
+"use strict";
+const byId = id => document.getElementById(id);
+const maxBytes = 2_000_000;
+let report = "";
+function parseCsv(raw) {
+  const source = raw.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+  const rows = [];
+  let row = [], value = "", state = "start", line = 1, rowLine = 1;
+  function field() { row.push(value); value = ""; state = "start"; }
+  function record() {
+    field();
+    if (row.some(cell => cell.trim() !== "")) rows.push({ line: rowLine, cells: row });
+    row = [];
+  }
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i];
+    if (state === "quoted") {
+      if (char === '"' && source[i + 1] === '"') { value += '"'; i++; }
+      else if (char === '"') state = "closed";
+      else { value += char; if (char === "\n") line++; }
+      continue;
+    }
+    if (char === ",") field();
+    else if (char === "\n") { record(); rowLine = ++line; }
+    else if (char === '"' && state === "start") state = "quoted";
+    else if (char === '"' || state === "closed") throw Error("Unexpected character after or near a quote on line " + line + ".");
+    else { value += char; state = "plain"; }
+  }
+  if (state === "quoted") throw Error("Unclosed quoted field starting in the record on line " + rowLine + ".");
+  record();
+  return rows;
+}
+function daysInMonth(year, month) {
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  return [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+}
+function validDate(date) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const [year, month, day] = date.split("-").map(Number);
+  return year > 0 && month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth(year, month);
+}
+function validate(raw, expected) {
+  if (expected && !/^(?!0000)\d{4}-(0[1-9]|1[0-2])$/.test(expected)) throw Error("Enter the expected month as YYYY-MM, such as 2027-01.");
+  const rows = parseCsv(raw);
+  if (!rows.length) throw Error("The CSV is empty.");
+  const header = rows.shift().cells.map(cell => cell.trim().toLowerCase());
+  const indexes = header.flatMap((cell, index) => ["date", "తేదీ", "తేదీని"].includes(cell) ? [index] : []);
+  if (indexes.length !== 1) throw Error("The header must contain exactly one date or తేదీ column.");
+  const seen = new Map(), issues = [];
+  for (const row of rows) {
+    if (row.cells.length !== header.length) {
+      issues.push("Line " + row.line + " has " + row.cells.length + " columns. Expected " + header.length + ".");
+      continue;
+    }
+    const date = row.cells[indexes[0]].trim();
+    if (!validDate(date)) { issues.push("Invalid date on line " + row.line + ": " + (date || "(blank)")); continue; }
+    if (seen.has(date)) issues.push("Duplicate date " + date + " on lines " + seen.get(date) + " and " + row.line + ".");
+    else seen.set(date, row.line);
+    if (expected && !date.startsWith(expected + "-")) issues.push(date + " is outside " + expected + " (line " + row.line + ").");
+  }
+  if (!rows.length) issues.push("No data rows found.");
+  if (expected) {
+    const [year, month] = expected.split("-").map(Number);
+    for (let day = 1; day <= daysInMonth(year, month); day++) {
+      const date = expected + "-" + String(day).padStart(2, "0");
+      if (!seen.has(date)) issues.push("Missing date " + date + ".");
+    }
+  }
+  return { summary: rows.length + " data rows · " + seen.size + " unique valid dates · " + issues.length + " issues", issues };
+}
+function display(summary, issues = []) {
+  byId("summary").textContent = summary;
+  byId("issues").replaceChildren(...issues.slice(0, 300).map(issue => {
+    const item = document.createElement("li");
+    item.textContent = issue;
+    return item;
+  }));
+  if (issues.length > 300) {
+    const item = document.createElement("li");
+    item.textContent = "Showing the first 300 issues. Download the report for all issues.";
+    byId("issues").append(item);
+  }
+  report = [summary, ...issues].join("\n") + "\n";
+  byId("download").disabled = false;
+}
+byId("file").addEventListener("change", async event => {
+  const file = event.target.files[0];
+  if (!file) return;
+  try {
+    if (file.size > maxBytes) throw Error("Choose a CSV under 2 MB.");
+    byId("csv").value = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer());
+    byId("check").click();
+  } catch (error) { display(error.message); }
+});
+byId("check").addEventListener("click", () => {
+  try {
+    const raw = byId("csv").value;
+    if (raw.length > maxBytes) throw Error("Paste a smaller CSV, under 2 million characters.");
+    const result = validate(raw, byId("month").value.trim());
+    display(result.summary, result.issues);
+  } catch (error) { display(error.message); }
+});
+byId("sample").addEventListener("click", () => {
+  byId("file").value = "";
+  byId("month").value = "";
+  byId("csv").value = 'date,festival,tithi\n2027-01-01,"నమూనా, ఉదాహరణ",\n2027-01-01,Duplicate example,\n2027-02-30,Invalid date example,';
+  byId("check").click();
+});
+byId("download").addEventListener("click", () => {
+  const url = URL.createObjectURL(new Blob([report], { type: "text/plain;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "calendar-validation-report.txt";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+</script>
+</body>
+</html>
